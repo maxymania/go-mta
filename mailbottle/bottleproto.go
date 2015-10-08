@@ -18,10 +18,11 @@ import "errors"
 
 var TryAgain = errors.New("Try-Again-Later")
 var PollEmpty = errors.New("Poll-Empty")
+var NotFound = errors.New("Not-Found")
 
 type Handler interface{
 	HandleBottle(src io.Reader) (string,error)
-	PollBottle() (bid string,f func(src io.Writer),e error)
+	PollBottle() (bid string,f func(dst io.Writer),e error)
 	PurgeBottle(bid string) error
 }
 
@@ -74,7 +75,7 @@ func (s *Server) purge(n uint, bid string) {
 	s.c.EndResponse(n)
 }
 
-func (s *Server) ServeOneRequest() (err error){
+func (s *Server) ServeOneRequest() (err error) {
 	n := s.c.Next()
 	s.c.StartRequest(n)
 	line,e := s.c.ReadLine()
@@ -91,7 +92,9 @@ func (s *Server) ServeOneRequest() (err error){
 			case "PURGE":
 			if len(ls)>=2 {
 				go s.purge(n,ls[1])
+				break
 			}
+			fallthrough
 			default:
 				s.c.EndRequest(n)
 				s.c.StartResponse(n)
@@ -106,4 +109,69 @@ func (s *Server) ServeOneRequest() (err error){
 	}
 	return
 }
+func (s *Server) Serve() error {
+	for {
+		e := s.ServeOneRequest()
+		if e!=nil { return e }
+	}
+}
+
+type Client struct{
+	c *textproto.Conn
+}
+func (c *Client) Init(conn io.ReadWriteCloser) {
+	c.c = textproto.NewConn(conn)
+}
+func (c *Client) HandleBottle(src io.Reader) (string,error) {
+	n := c.c.Next()
+	c.c.StartRequest(n)
+	c.c.PrintfLine("MESSAGE")
+	dw := c.c.DotWriter()
+	io.Copy(dw,src)
+	dw.Close()
+	c.c.EndRequest(n)
+	c.c.StartResponse(n)
+	code,msg,e := c.c.ReadCodeLine(2)
+	if e!=nil {
+		c.c.EndResponse(n)
+		if code==301 { return "",TryAgain }
+		return "",errors.New(msg)
+	}
+	c.c.EndResponse(n)
+	return msg,nil
+}
+func (c *Client) PollBottle() (bid string,f func(dst io.Writer),e error) {
+	n := c.c.Next()
+	c.c.StartRequest(n)
+	c.c.PrintfLine("POLL")
+	c.c.EndRequest(n)
+	c.c.StartResponse(n)
+	code,msg,e := c.c.ReadCodeLine(200)
+	if e!=nil {
+		c.c.EndResponse(n)
+		if code==401 { return "",nil,PollEmpty }
+		return "",nil,errors.New(msg)
+	}
+	if len(msg)>3 && msg[:3]=="ID " { msg = msg[3:] }
+	return msg,func(dst io.Writer){
+		dr := c.c.DotReader()
+		io.Copy(dst,dr)
+		c.c.EndResponse(n)
+	},nil
+}
+func (c *Client) PurgeBottle(bid string) error {
+	n := c.c.Next()
+	c.c.StartRequest(n)
+	c.c.PrintfLine("PURGE %s",bid)
+	c.c.EndRequest(n)
+	c.c.StartResponse(n)
+	_,msg,e := c.c.ReadCodeLine(2)
+	if e!=nil { e = errors.New(msg) }
+	c.c.EndResponse(n)
+	return e
+}
+func (c *Client) Close() error {
+	return c.c.Close()
+}
+
 
