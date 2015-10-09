@@ -19,6 +19,7 @@ import "io"
 type BottleInfo struct{
 	From   []string
 	RcptTo []string
+	MIME8B bool // BODY=8BITMIME
 }
 
 type Reader struct{
@@ -42,6 +43,8 @@ func (r *Reader) ReadData(b *BottleInfo) (io.Reader,error) {
 		l,e := r.line()
 		if e!=nil { return nil,e }
 		switch {
+		case strings.HasPrefix(l,"BODY-8BITMIME"):
+			b.MIME8B = true
 		case strings.HasPrefix(l,"FROM:"):
 			b.From = append(b.From,l[5:])
 		case strings.HasPrefix(l,"RCPT-TO:"):
@@ -85,6 +88,9 @@ func (w *Writer) Data() io.WriteCloser {
  In Follow-up it starts the data section.
 */
 func (w *Writer) WriteData(b *BottleInfo) io.WriteCloser {
+	if b.MIME8B {
+		fmt.Fprintf(w,"BODY-8BITMIME\n")
+	}
 	for _,s := range b.From {
 		w.From(s)
 	}

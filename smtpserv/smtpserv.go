@@ -32,6 +32,11 @@ const (
 type ServerConfig struct{
 	Handler mailbottle.Handler
 	TlsConfig *tls.Config
+	/*
+		SMTP's VRFY command
+		returns the email address or ""
+	*/
+	Verify func(addr string) string
 }
 
 type Server struct{
@@ -41,6 +46,7 @@ func (s *Server) Init(c *ServerConfig){
 	s.server = new(server)
 	s.backend = c.Handler
 	s.tlsConfig = c.TlsConfig
+	s.verify = c.Verify
 	if s.tlsConfig!=nil {
 		s.handlers["starttls"] = h_starttls
 		s.exts = append(s.exts,"STARTTLS")
@@ -72,6 +78,7 @@ type server struct{
 	exts []string
 	backend mailbottle.Handler
 	tlsConfig *tls.Config
+	verify func(addr string) string
 }
 
 func (s *server) init() {
@@ -82,6 +89,7 @@ func (s *server) init() {
 		"rcpt":h_rcpt,
 		"data":h_data,
 		"quit":h_quit,
+		"vrfy":h_vrfy,
 	}
 	s.exts = make([]string,0,32)
 	/* This simply means, that the emails may be 8 Bit (utf-8, yenc, etc.) */
@@ -145,7 +153,9 @@ func h_mail(h *handler,args []string,raw string) error {
 	if i<0 { return errResp{501, "invalid parameter"} }
 	raw = raw[i+1:]
 	i = strings.Index(raw,">")
+	rest := raw[i+1:]
 	raw = raw[:i]
+	h.mbottle.MIME8B = h.mbottle.MIME8B || strings.Index(strings.ToUpper(rest),"BODY=8BITMIME")>=0
 	h.mbottle.From = append(h.mbottle.From,raw)
 	h.conn.PrintfLine(action_ok)
 	return nil
@@ -200,6 +210,18 @@ func h_starttls(h *handler,args []string,raw string) error {
 	e := cc.Handshake()
 	if e!=nil { return e }
 	*h = handler{s:h.s,conn:textproto.NewConn(cc),netconn:cc}
+	h.startUp()
+	return nil
+}
+
+func h_vrfy(h *handler,args []string,raw string) error {
+	if h.s.verify!=nil{
+		if na := h.s.verify(raw[5:]); na!="" {
+			h.conn.PrintfLine("250 %s",na)
+			return nil			
+		}
+	}
+	h.conn.PrintfLine("252 send some mail, i'll try my best")
 	return nil
 }
 
